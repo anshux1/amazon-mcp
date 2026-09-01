@@ -1,0 +1,42 @@
+{
+  "name": "amazon-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@11.10.0",
+  "type": "module",
+  "description": "Shopping MCP server on NitroStack with eBay catalog, carts, orders, and widgets",
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=11.0.0"
+  },
+  "scripts": {
+    "dev": "nitrostack-cli dev",
+    "build": "nitrostack-cli build",
+    "typecheck": "tsc --noEmit",
+    "verify": "pnpm build && node scripts/verify.mjs",
+    "test": "pnpm verify",
+    "start": "pnpm run build && nitrostack-cli start",
+    "start:prod": "nitrostack-cli start",
+    "upgrade": "nitrostack-cli upgrade",
+    "install:all": "pnpm install && pnpm --dir src/widgets install",
+    "widget": "pnpm --dir src/widgets"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": ">=0.1.0",
+    "@nitrostack/core": "^1",
+    "dotenv": "^16.3.1",
+    "ebay-api": "^10.0.1",
+    "pg": "^8.23.0",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@nitrostack/cli": "^1",
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.23.1",
+    "typescript": "^5.3.3"
+  },
+  "author": "",
+  "nitrostack": {
+    "skillsVersion": "1.0.0"
+  }
+}

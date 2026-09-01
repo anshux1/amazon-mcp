@@ -1,0 +1,54 @@
+{
+  "version": "1.0.0",
+  "widgets": [
+    {
+      "uri": "/product-card",
+      "name": "Product Card",
+      "description": "Displays current eBay product details and price.",
+      "examples": [{ "name": "Headphones", "data": { "itemId": "demo-wireless-headphones", "title": "Wireless Noise-Cancelling Headphones", "price": 79.99, "currency": "USD" } }],
+      "tags": ["shopping", "product", "ebay"]
+    },
+    {
+      "uri": "/product-search-results",
+      "name": "Product Search Results",
+      "description": "Displays products returned by an eBay catalog search.",
+      "examples": [{ "name": "Search", "data": { "total": 1, "source": "demo", "items": [] } }],
+      "tags": ["shopping", "search", "ebay"]
+    },
+    {
+      "uri": "/category-tree",
+      "name": "Category Tree",
+      "description": "Displays eBay product categories.",
+      "examples": [{ "name": "Categories", "data": { "treeId": "demo-us", "root": { "categoryId": "0", "categoryName": "All Categories", "children": [] } } }],
+      "tags": ["shopping", "categories"]
+    },
+    {
+      "uri": "/cart-summary",
+      "name": "Cart Summary",
+      "description": "Displays cart contents and checkout totals.",
+      "examples": [{ "name": "Empty cart", "data": { "itemCount": 0, "subtotal": 0, "currency": "USD", "items": [] } }],
+      "tags": ["shopping", "cart"]
+    },
+    {
+      "uri": "/order-confirmation",
+      "name": "Order Confirmation",
+      "description": "Displays a successful order confirmation.",
+      "examples": [{ "name": "Placed order", "data": { "order": { "orderId": "ord_demo", "status": "placed", "total": 79.99, "currency": "USD", "items": [] } } }],
+      "tags": ["shopping", "order"]
+    },
+    {
+      "uri": "/order-summary",
+      "name": "Order Summary",
+      "description": "Displays an order or authenticated order history.",
+      "examples": [{ "name": "Order history", "data": { "orders": [] } }],
+      "tags": ["shopping", "orders"]
+    },
+    {
+      "uri": "/order-cancellation",
+      "name": "Order Cancellation",
+      "description": "Displays a cancelled order result.",
+      "examples": [{ "name": "Cancelled order", "data": { "orderId": "ord_demo", "status": "cancelled" } }],
+      "tags": ["shopping", "orders", "cancellation"]
+    }
+  ]
+}

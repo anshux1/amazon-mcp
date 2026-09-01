@@ -1,0 +1,63 @@
+# Agent-local instructions
+.agents/
+
+# Dependencies
+node_modules/
+src/widgets/node_modules/
+
+# Build outputs
+dist/
+src/widgets/.next/
+src/widgets/out/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+.data/
+
+# Coverage
+coverage/
+.nyc_output/
+
+# Uploads
+uploads/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Optional package-manager caches
+.npm/
+.pnpm-store/
+
+# Optional eslint cache
+.eslintcache
+
+# OAuth tokens/secrets (never commit these!)
+*.pem
+*.key
+tokens.json

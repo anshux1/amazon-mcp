@@ -29,10 +29,44 @@ const expectedResources = [
   'shopping://cart-guide',
   'shopping://order-guide',
   'shopping://order-statuses',
+  'metrics://shopping',
   'health://checks',
   'widget://examples',
 ];
+const widgetTools = {
+  search_products: 'ui://widget/next-product-search-results.html',
+  get_product: 'ui://widget/next-product-card.html',
+  get_categories: 'ui://widget/next-category-tree.html',
+  add_to_cart: 'ui://widget/next-cart-summary.html',
+  view_cart: 'ui://widget/next-cart-summary.html',
+  update_cart_item: 'ui://widget/next-cart-summary.html',
+  checkout: 'ui://widget/next-cart-summary.html',
+  place_order: 'ui://widget/next-order-confirmation.html',
+  get_order: 'ui://widget/next-order-summary.html',
+  order_history: 'ui://widget/next-order-summary.html',
+  cancel_order: 'ui://widget/next-order-cancellation.html',
+};
+const ebayImageHosts = [
+  'https://i.ebayimg.com',
+  'https://*.ebayimg.com',
+  'https://secureir.ebaystatic.com',
+  'https://*.ebaystatic.com',
+];
+// Widgets that render catalog imagery must declare the eBay image hosts, or a
+// strict client sandbox silently drops every product picture.
+const cspTools = new Set([
+  'search_products',
+  'get_product',
+  'add_to_cart',
+  'view_cart',
+  'update_cart_item',
+  'checkout',
+  'place_order',
+  'get_order',
+  'order_history',
+]);
 
+const previousSecret = 'verify-previous-secret-with-enough-entropy';
 const serverEnv = {
   ...process.env,
   NODE_ENV: 'development',
@@ -41,6 +75,7 @@ const serverEnv = {
   DATABASE_FILE: ':memory:',
   EBAY_MOCK: 'true',
   JWT_SECRET: secret,
+  JWT_SECRET_PREVIOUS: previousSecret,
   JWT_AUDIENCE: 'amazon-mcp',
   JWT_ISSUER: 'better-auth',
   PORT: '0',
@@ -149,7 +184,59 @@ const otherToken = generateJWT({
   issuer: 'better-auth',
   expiresIn: '10m',
 });
+const previousToken = generateJWT({
+  secret: previousSecret,
+  payload: { sub: 'rotated-user', scopes: ['shopping:read', 'shopping:write'] },
+  audience: 'amazon-mcp',
+  issuer: 'better-auth',
+  expiresIn: '10m',
+});
+const readOnlyToken = generateJWT({
+  secret,
+  payload: { sub: 'read-only-user', scopes: ['shopping:read'] },
+  audience: 'amazon-mcp',
+  issuer: 'better-auth',
+  expiresIn: '10m',
+});
+const writeOnlyToken = generateJWT({
+  secret,
+  payload: { sub: 'write-only-user', scope: 'shopping:write' },
+  audience: 'amazon-mcp',
+  issuer: 'better-auth',
+  expiresIn: '10m',
+});
+const wrongAudienceToken = generateJWT({
+  secret,
+  payload: { sub: 'wrong-audience-user', scopes: ['shopping:read', 'shopping:write'] },
+  audience: 'another-resource',
+  issuer: 'better-auth',
+  expiresIn: '10m',
+});
+const wrongIssuerToken = generateJWT({
+  secret,
+  payload: { sub: 'wrong-issuer-user', scopes: ['shopping:read', 'shopping:write'] },
+  audience: 'amazon-mcp',
+  issuer: 'another-issuer',
+  expiresIn: '10m',
+});
+const wrongSignatureToken = generateJWT({
+  secret: 'wrong-signing-secret-with-enough-entropy',
+  payload: { sub: 'wrong-signature-user', scopes: ['shopping:read', 'shopping:write'] },
+  audience: 'amazon-mcp',
+  issuer: 'better-auth',
+  expiresIn: '10m',
+});
+const expiredToken = generateJWT({
+  secret,
+  payload: { sub: 'expired-user', scopes: ['shopping:read', 'shopping:write'] },
+  audience: 'amazon-mcp',
+  issuer: 'better-auth',
+  expiresIn: -1,
+});
 const authMeta = { _meta: { authorization: `Bearer ${token}` } };
+const previousAuthMeta = { _meta: { authorization: `Bearer ${previousToken}` } };
+const readOnlyAuthMeta = { _meta: { authorization: `Bearer ${readOnlyToken}` } };
+const writeOnlyAuthMeta = { _meta: { authorization: `Bearer ${writeOnlyToken}` } };
 const otherAuthMeta = { _meta: { authorization: `Bearer ${otherToken}` } };
 
 try {
@@ -167,7 +254,28 @@ try {
     assert(tool.inputSchema?.type === 'object', `${tool.name} has no object input schema`);
     assert(tool.examples?.request !== undefined, `${tool.name} is missing request examples`);
     assert(tool.examples?.response !== undefined, `${tool.name} is missing response examples`);
+    assert(Array.isArray(tool.outputSchema?.anyOf), `${tool.name} does not advertise the standard output envelope`);
+
+    const meta = tool._meta ?? {};
+    assert(meta['ui/template'] === widgetTools[tool.name], `${tool.name} is not linked to ${widgetTools[tool.name]}`);
+    assert(meta['openai/outputTemplate'] === widgetTools[tool.name], `${tool.name} is missing the OpenAI output template`);
+    if (cspTools.has(tool.name)) {
+      const openAiCsp = meta['openai/widgetCSP']?.resource_domains ?? [];
+      const mcpCsp = meta.ui?.csp?.resourceDomains ?? [];
+      for (const host of ebayImageHosts) {
+        assert(openAiCsp.includes(host), `${tool.name} openai/widgetCSP is missing ${host}`);
+        assert(mcpCsp.includes(host), `${tool.name} MCP widget CSP is missing ${host}`);
+      }
+    }
   }
+
+  const addToCartProperties = Object.keys(
+    tools.tools.find((tool) => tool.name === 'add_to_cart').inputSchema.properties,
+  ).sort();
+  assert(
+    JSON.stringify(addToCartProperties) === JSON.stringify(['item_id', 'quantity']),
+    `add_to_cart still accepts caller-supplied product data: ${addToCartProperties.join(', ')}`,
+  );
 
   const resources = await withTimeout(request('resources/list'), 'resources/list');
   const resourceUris = resources.resources.map((resource) => resource.uri);
@@ -203,6 +311,27 @@ try {
   assert(denied.success === false && denied.error.code === 'UNAUTHORIZED', `Protected tool was not denied: ${JSON.stringify(denied)}`);
   const malformedToken = await call('view_cart', { _meta: { authorization: 'Bearer definitely-not-a-jwt' } });
   assert(malformedToken.success === false && malformedToken.error.code === 'UNAUTHORIZED', `Malformed JWT was not rejected: ${JSON.stringify(malformedToken)}`);
+  for (const [label, metadata] of [
+    ['wrong audience', { _meta: { authorization: `Bearer ${wrongAudienceToken}` } }],
+    ['wrong issuer', { _meta: { authorization: `Bearer ${wrongIssuerToken}` } }],
+    ['wrong signature', { _meta: { authorization: `Bearer ${wrongSignatureToken}` } }],
+    ['expired', { _meta: { authorization: `Bearer ${expiredToken}` } }],
+  ]) {
+    const rejected = await call('view_cart', metadata);
+    assert(rejected.success === false && rejected.error.code === 'UNAUTHORIZED', `${label} JWT was not rejected: ${JSON.stringify(rejected)}`);
+  }
+  const rotated = await call('view_cart', previousAuthMeta);
+  assert(rotated.success && rotated.data.itemCount === 0, `Previous rotation secret was not accepted: ${JSON.stringify(rotated)}`);
+  const readOnlyCart = await call('view_cart', readOnlyAuthMeta);
+  assert(readOnlyCart.success, `Read scope was not accepted: ${JSON.stringify(readOnlyCart)}`);
+  const readOnlyWrite = await call('add_to_cart', {
+    item_id: 'v1|demo-headphones|0',
+    quantity: 1,
+    ...readOnlyAuthMeta,
+  });
+  assert(readOnlyWrite.success === false && readOnlyWrite.error.code === 'FORBIDDEN', `Insufficient read-only scope was not rejected: ${JSON.stringify(readOnlyWrite)}`);
+  const writeOnlyRead = await call('view_cart', writeOnlyAuthMeta);
+  assert(writeOnlyRead.success === false && writeOnlyRead.error.code === 'FORBIDDEN', `Insufficient write-only scope was not rejected: ${JSON.stringify(writeOnlyRead)}`);
   const invalid = await call('search_products', { query: '' });
   assert(invalid.success === false && invalid.error.code === 'BAD_REQUEST', `Invalid input was not rejected: ${JSON.stringify(invalid)}`);
 
@@ -252,6 +381,89 @@ try {
   const finalCart = await protectedCall('view_cart');
   assert(finalCart.success && finalCart.data.itemCount === 0, `Cart was not cleared: ${JSON.stringify(finalCart)}`);
 
+  // ---------------------------------------------------------------------
+  // Negative business flows
+  // ---------------------------------------------------------------------
+  const featured = await withTimeout(request('resources/read', { uri: 'shopping://featured-products' }), 'featured read');
+  const featuredPayload = JSON.parse(featured.contents[0].text);
+  assert(featuredPayload.strategy === 'demo_catalog', `Featured products did not use the demo catalog: ${JSON.stringify(featuredPayload).slice(0, 300)}`);
+  assert(featuredPayload.items.length > 0, 'Featured products returned no items in demo mode');
+
+  const missingCategory = await call('get_categories', { category_id: 'no-such-category' });
+  assert(missingCategory.success === false && missingCategory.error.code === 'NOT_FOUND', `Invalid category was not rejected: ${JSON.stringify(missingCategory)}`);
+
+  const missingProduct = await call('get_product', { item_id: 'no-such-item' });
+  assert(missingProduct.success === false && missingProduct.error.code === 'NOT_FOUND', `Invalid item was not rejected: ${JSON.stringify(missingProduct)}`);
+
+  const emptyCheckout = await protectedCall('checkout');
+  assert(emptyCheckout.success === false && emptyCheckout.error.code === 'BAD_REQUEST', `Empty checkout was not rejected: ${JSON.stringify(emptyCheckout)}`);
+
+  const unknownItem = await protectedCall('add_to_cart', { item_id: 'no-such-item', quantity: 1 });
+  assert(unknownItem.success === false && unknownItem.error.code === 'NOT_FOUND', `Unknown item entered a cart: ${JSON.stringify(unknownItem)}`);
+
+  const forged = await protectedCall('add_to_cart', {
+    item_id: item.data.itemId,
+    quantity: 1,
+    unit_price: 0.01,
+    title: 'Forged title',
+    currency: 'JPY',
+  });
+  assert(forged.success, `Add to cart failed: ${JSON.stringify(forged)}`);
+  const forgedItem = forged.data.items.find((entry) => entry.itemId === item.data.itemId);
+  assert(forgedItem.unitPrice === item.data.price && forgedItem.currency === item.data.currency && forgedItem.title === item.data.title,
+    `Caller-supplied product data reached the cart: ${JSON.stringify(forgedItem)}`);
+
+  // The demo catalog advertises 24 units; one is already in the cart above.
+  const overStock = await protectedCall('add_to_cart', { item_id: item.data.itemId, quantity: 30 });
+  assert(overStock.success === false && overStock.error.code === 'OUT_OF_STOCK', `Over-stock quantity was accepted: ${JSON.stringify(overStock)}`);
+
+  // A quote is bound to the cart it was priced from.
+  const staleQuote = await protectedCall('checkout');
+  assert(staleQuote.success && staleQuote.data.cartRevision, `Checkout failed: ${JSON.stringify(staleQuote)}`);
+  const secondItem = await call('search_products', { query: 'keyboard', limit: 1 });
+  const secondItemId = secondItem.data.items[0].itemId;
+  const changedCart = await protectedCall('add_to_cart', { item_id: secondItemId, quantity: 1 });
+  assert(changedCart.success && changedCart.data.revision !== staleQuote.data.cartRevision, 'Cart revision did not change after a cart change');
+
+  const stalePlacement = await protectedCall('place_order', { checkout_id: staleQuote.data.checkoutId });
+  assert(stalePlacement.success === false && stalePlacement.error.code === 'CONFLICT', `A stale quote was placed: ${JSON.stringify(stalePlacement)}`);
+  const preservedCart = await protectedCall('view_cart');
+  assert(preservedCart.success && preservedCart.data.items.length === 2, `A stale placement destroyed the newer cart: ${JSON.stringify(preservedCart.data)}`);
+
+  const freshQuote = await protectedCall('checkout');
+  assert(freshQuote.success, `Fresh checkout failed: ${JSON.stringify(freshQuote)}`);
+  const firstPlacement = await protectedCall('place_order', { checkout_id: freshQuote.data.checkoutId });
+  assert(firstPlacement.success && firstPlacement.data.alreadyPlaced === false, `Place order failed: ${JSON.stringify(firstPlacement)}`);
+  const retriedPlacement = await protectedCall('place_order', { checkout_id: freshQuote.data.checkoutId });
+  assert(
+    retriedPlacement.success &&
+      retriedPlacement.data.alreadyPlaced === true &&
+      retriedPlacement.data.order.orderId === firstPlacement.data.order.orderId,
+    `Retrying place_order created a second order: ${JSON.stringify(retriedPlacement)}`,
+  );
+
+  const otherUserQuote = await call('place_order', { checkout_id: freshQuote.data.checkoutId, ...otherAuthMeta });
+  assert(otherUserQuote.success === false && otherUserQuote.error.code === 'NOT_FOUND', `A quote leaked across users: ${JSON.stringify(otherUserQuote)}`);
+
+  const secondOrderId = firstPlacement.data.order.orderId;
+  const firstCancel = await protectedCall('cancel_order', { order_id: secondOrderId });
+  assert(firstCancel.success, `Cancel failed: ${JSON.stringify(firstCancel)}`);
+  const secondCancel = await protectedCall('cancel_order', { order_id: secondOrderId });
+  assert(secondCancel.success === false && secondCancel.error.code === 'CONFLICT', `An already-cancelled order was cancelled again: ${JSON.stringify(secondCancel)}`);
+
+  const historyAfter = await protectedCall('order_history', { limit: 50 });
+  assert(historyAfter.success && historyAfter.data.count === 2, `Unexpected order history: ${JSON.stringify(historyAfter.data)}`);
+  assert(historyAfter.data.orders.every((entry) => entry.fulfillment === 'demo'), 'Orders did not report the demo fulfilment mode');
+
+  const metrics = await withTimeout(request('resources/read', { uri: 'metrics://shopping' }), 'metrics read');
+  const metricsPayload = JSON.parse(metrics.contents[0].text);
+  assert(metricsPayload.tools.view_cart?.invocations > 0, `Tool metrics were not recorded: ${JSON.stringify(metricsPayload.tools).slice(0, 300)}`);
+  assert(metricsPayload.quota.scope === 'process', `Unexpected quota scope: ${metricsPayload.quota.scope}`);
+  assert(metricsPayload.quota.remaining < metricsPayload.quota.limit, 'Catalog calls did not consume the eBay budget');
+  assert(metricsPayload.cache.catalog.hits + metricsPayload.cache.catalog.misses > 0, 'Catalog cache counters were not recorded');
+  assert(metricsPayload.storage.mode === 'memory', `Unexpected storage mode: ${metricsPayload.storage.mode}`);
+  assert(!JSON.stringify(metricsPayload).includes(secret), 'Metrics leaked the JWT secret');
+
   console.log(JSON.stringify({
     status: 'ok',
     tools: toolNames,
@@ -259,6 +471,18 @@ try {
     prompt: 'shopping_assistant',
     orderId,
     orderStatus: cancelled.data.status,
+    negativeFlows: [
+      'invalid category',
+      'invalid product',
+      'empty checkout',
+      'unknown cart item',
+      'forged product snapshot',
+      'out-of-stock quantity',
+      'cart changed after checkout',
+      'duplicate place_order',
+      'cross-user quote access',
+      'already-cancelled order',
+    ],
   }, null, 2));
 } catch (error) {
   console.error(error instanceof Error ? error.stack : error);

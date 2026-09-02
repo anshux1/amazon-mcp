@@ -1,8 +1,16 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import eBayApi from 'ebay-api';
 import { ConfigService, Injectable } from '@nitrostack/core';
 import { ExternalServiceError, NotFoundError } from '../../common/errors.js';
 import { parseMoney } from '../../common/money.js';
 import type { CategoryNode, ProductDetails, ProductSummary } from '../../common/types.js';
+import { MetricsService, type EbayFailureCategory } from '../../observability/metrics.service.js';
+
+export const DEFAULT_EBAY_MAX_RETRIES = 2;
+export const DEFAULT_EBAY_RETRY_BASE_MS = 250;
+/** Bounds a taxonomy response so a full eBay tree cannot overflow a client. */
+export const DEFAULT_CATEGORY_MAX_DEPTH = 4;
+export const DEFAULT_CATEGORY_MAX_NODES = 2000;
 
 export interface EbaySearchParams {
   query: string;
@@ -148,12 +156,93 @@ function asRecord(value: unknown): Record<string, any> {
   return value && typeof value === 'object' ? (value as Record<string, any>) : {};
 }
 
-function errorMessage(error: unknown): string {
+function rawErrorMessage(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
   }
   const record = asRecord(error);
   return typeof record.message === 'string' ? record.message : 'Unknown eBay error';
+}
+
+/**
+ * Removes anything credential-shaped from an upstream message.
+ *
+ * eBay SDK errors can echo request headers or query strings. Tool output and
+ * logs must never carry a token, an application key, or a raw Authorization
+ * value, so those fragments are replaced before the message travels anywhere.
+ */
+export function sanitizeUpstreamMessage(message: string): string {
+  return message
+    // A named credential field, with or without an auth scheme in front of it.
+    .replace(
+      /\b(access[_-]?token|refresh[_-]?token|client[_-]?secret|cert[_-]?id|app[_-]?id|dev[_-]?id|authorization|api[_-]?key)\b("?\s*[=:]\s*"?)(?:Bearer\s+|Basic\s+)?[^\s,&"'}]+/gi,
+      '$1$2[redacted]',
+    )
+    // A bare scheme-prefixed token that was not introduced by a field name.
+    .replace(/\b(Bearer|Basic)\s+[^\s,]+/gi, '$1 [redacted]')
+    // eBay application tokens carry this recognizable prefix.
+    .replace(/\bv\^1\.1#[^\s,]+/g, '[redacted]')
+    .slice(0, 300);
+}
+
+export function categorizeEbayError(error: unknown): EbayFailureCategory {
+  const record = asRecord(error);
+  const status = [
+    record.status,
+    record.statusCode,
+    asRecord(record.response).status,
+    asRecord(asRecord(record.meta).res).status,
+  ].find((value): value is number => typeof value === 'number');
+  const message = rawErrorMessage(error);
+
+  if (status === 404 || /\bnot found\b/i.test(message)) return 'not_found';
+  if (status === 401 || status === 403 || /\b(unauthorized|forbidden|invalid[_ -]?grant|invalid[_ -]?client)\b/i.test(message)) {
+    return 'unauthorized';
+  }
+  if (status === 429 || /\brate limit|quota|too many requests\b/i.test(message)) return 'rate_limited';
+  if (typeof status === 'number' && status >= 500) return 'server_error';
+  if (/\btimeout|timed out|ETIMEDOUT|ESOCKETTIMEDOUT\b/i.test(message)) return 'timeout';
+  if (/\bECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up|network\b/i.test(message)) return 'network';
+  return 'unknown';
+}
+
+const RETRYABLE_CATEGORIES: ReadonlySet<EbayFailureCategory> = new Set([
+  'timeout',
+  'network',
+  'server_error',
+  'rate_limited',
+]);
+
+/** Depth- and size-bounded copy of a taxonomy subtree. */
+export function boundCategoryTree(
+  root: CategoryNode,
+  maxDepth: number,
+  maxNodes: number,
+): { root: CategoryNode; truncated: boolean; depth: number } {
+  let nodes = 0;
+  let truncated = false;
+  let deepest = 0;
+
+  const visit = (node: CategoryNode, depth: number): CategoryNode => {
+    nodes += 1;
+    deepest = Math.max(deepest, depth);
+    if (depth >= maxDepth || nodes >= maxNodes) {
+      truncated = truncated || node.children.length > 0;
+      return { ...node, children: [] };
+    }
+
+    const children: CategoryNode[] = [];
+    for (const child of node.children) {
+      if (nodes >= maxNodes) {
+        truncated = true;
+        break;
+      }
+      children.push(visit(child, depth + 1));
+    }
+    return { ...node, children };
+  };
+
+  return { root: visit(root, 0), truncated, depth: deepest };
 }
 
 function normalizeProduct(rawValue: unknown): ProductDetails {
@@ -250,14 +339,30 @@ function normalizeCategory(rawValue: unknown): CategoryNode {
 }
 
 /** eBay Browse and Taxonomy API adapter with an explicit offline demo mode. */
-@Injectable({ deps: [ConfigService] })
+@Injectable({ deps: [ConfigService, MetricsService] })
 export class EbayService {
   private readonly client: EbayClientLike | null;
   private readonly marketplaceId: string;
   private readonly mockEnabled: boolean;
+  private readonly sandbox: boolean;
+  private readonly metrics: MetricsService;
+  private readonly maxRetries: number;
+  private readonly retryBaseMs: number;
+  private readonly categoryMaxDepth: number;
+  private readonly categoryMaxNodes: number;
 
-  constructor(config: ConfigService, client?: EbayClientLike) {
+  constructor(config: ConfigService, metrics?: MetricsService, client?: EbayClientLike) {
     this.marketplaceId = config.get<string>('EBAY_MARKETPLACE_ID', 'EBAY_US');
+    this.metrics = metrics instanceof MetricsService ? metrics : new MetricsService();
+
+    const readInteger = (key: string, fallback: number, minimum: number, maximum: number): number => {
+      const parsed = Number(config.get<string>(key, String(fallback)));
+      return Number.isSafeInteger(parsed) && parsed >= minimum && parsed <= maximum ? parsed : fallback;
+    };
+    this.maxRetries = readInteger('EBAY_MAX_RETRIES', DEFAULT_EBAY_MAX_RETRIES, 0, 5);
+    this.retryBaseMs = readInteger('EBAY_RETRY_BASE_MS', DEFAULT_EBAY_RETRY_BASE_MS, 0, 10_000);
+    this.categoryMaxDepth = readInteger('EBAY_CATEGORY_MAX_DEPTH', DEFAULT_CATEGORY_MAX_DEPTH, 1, 10);
+    this.categoryMaxNodes = readInteger('EBAY_CATEGORY_MAX_NODES', DEFAULT_CATEGORY_MAX_NODES, 10, 50_000);
 
     const mockSetting = config.get<string>('EBAY_MOCK');
     const mockRequested = mockSetting?.trim().toLowerCase() === 'true';
@@ -276,6 +381,7 @@ export class EbayService {
     }
 
     this.mockEnabled = !client && (mockRequested || implicitDevelopmentDemo);
+    this.sandbox = config.get<string>('EBAY_SANDBOX', 'false')?.trim().toLowerCase() === 'true';
 
     if (client) {
       this.client = client;
@@ -285,7 +391,7 @@ export class EbayService {
         certId: certId as string,
         devId: config.get<string>('EBAY_DEV_ID'),
         marketplaceId: this.marketplaceId as any,
-        sandbox: config.get<string>('EBAY_SANDBOX', 'false') === 'true',
+        sandbox: this.sandbox,
       });
     } else {
       this.client = null;
@@ -298,6 +404,52 @@ export class EbayService {
 
   isConfigured(): boolean {
     return this.client !== null && !this.mockEnabled;
+  }
+
+  isSandbox(): boolean {
+    return this.sandbox;
+  }
+
+  /** The deterministic offline catalog, used by demo-mode resources. */
+  listDemoProducts(): ProductDetails[] {
+    return structuredClone(DEMO_PRODUCTS);
+  }
+
+  /**
+   * Runs one upstream call, recording latency and failure category, and
+   * retrying only failures that a retry can plausibly fix.
+   *
+   * Retries are bounded and exponential with jitter: a timeout, a dropped
+   * connection, a 5xx, or an eBay-side 429 is worth one or two more attempts,
+   * while a 404 or an authentication failure is returned immediately.
+   */
+  private async call<T>(operation: string, run: () => Promise<T>): Promise<T> {
+    let attempt = 0;
+    for (;;) {
+      const startedAt = Date.now();
+      try {
+        const result = await run();
+        this.metrics.recordEbayRequest(operation, Date.now() - startedAt);
+        return result;
+      } catch (error) {
+        const category = categorizeEbayError(error);
+        this.metrics.recordEbayRequest(operation, Date.now() - startedAt, category);
+
+        if (attempt >= this.maxRetries || !RETRYABLE_CATEGORIES.has(category)) {
+          throw error;
+        }
+        attempt += 1;
+        this.metrics.recordEbayRetry(operation);
+        const backoff = this.retryBaseMs * 2 ** (attempt - 1);
+        await delay(backoff + Math.floor(Math.random() * this.retryBaseMs));
+      }
+    }
+  }
+
+  private failure(service: string, error: unknown): never {
+    throw new ExternalServiceError(service, sanitizeUpstreamMessage(rawErrorMessage(error)), {
+      category: categorizeEbayError(error),
+    });
   }
 
   async searchItems(params: EbaySearchParams): Promise<EbaySearchResult> {
@@ -324,6 +476,7 @@ export class EbayService {
       };
     }
 
+    const client = this.client;
     try {
       const query: Record<string, string> = {
         q: params.query,
@@ -332,7 +485,7 @@ export class EbayService {
       };
       if (params.categoryId) query.category_ids = params.categoryId;
       if (params.sort) query.sort = params.sort;
-      const result = asRecord(await this.client.buy.browse.search(query));
+      const result = asRecord(await this.call('browse.search', () => client.buy.browse.search(query)));
       const rawItems = Array.isArray(result.itemSummaries) ? result.itemSummaries : [];
       return {
         total: typeof result.total === 'number' ? result.total : rawItems.length,
@@ -342,7 +495,7 @@ export class EbayService {
         source: 'ebay',
       };
     } catch (error) {
-      throw new ExternalServiceError('eBay Browse API', errorMessage(error));
+      this.failure('eBay Browse API', error);
     }
   }
 
@@ -355,61 +508,99 @@ export class EbayService {
       return structuredClone(product);
     }
 
+    const client = this.client;
     try {
-      return normalizeProduct(await this.client.buy.browse.getItem(itemId));
-    } catch (error) {
-      const message = errorMessage(error);
-      if (/not found|404/i.test(message)) {
+      const item = normalizeProduct(
+        await this.call('browse.getItem', () => client.buy.browse.getItem(itemId)),
+      );
+      if (!item.itemId) {
         throw new NotFoundError('Product', itemId);
       }
-      throw new ExternalServiceError('eBay Browse API', message);
+      return item;
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        throw error;
+      }
+      if (categorizeEbayError(error) === 'not_found') {
+        throw new NotFoundError('Product', itemId);
+      }
+      this.failure('eBay Browse API', error);
     }
   }
 
-  async getCategoryTree(categoryId?: string): Promise<{ treeId: string; root: CategoryNode }> {
+  async getCategoryTree(categoryId?: string): Promise<{
+    treeId: string;
+    root: CategoryNode;
+    truncated: boolean;
+    depth: number;
+  }> {
     if (this.mockEnabled || !this.client) {
       if (categoryId && categoryId !== '0') {
         const child = DEMO_CATEGORIES.children.find((candidate) => candidate.categoryId === categoryId);
         if (!child) throw new NotFoundError('Category', categoryId);
-        return { treeId: 'demo-us', root: structuredClone(child) };
+        const bounded = boundCategoryTree(structuredClone(child), this.categoryMaxDepth, this.categoryMaxNodes);
+        return { treeId: 'demo-us', ...bounded };
       }
-      return { treeId: 'demo-us', root: structuredClone(DEMO_CATEGORIES) };
+      const bounded = boundCategoryTree(
+        structuredClone(DEMO_CATEGORIES),
+        this.categoryMaxDepth,
+        this.categoryMaxNodes,
+      );
+      return { treeId: 'demo-us', ...bounded };
     }
 
+    const client = this.client;
     try {
       const defaultTree = asRecord(
-        await this.client.commerce.taxonomy.getDefaultCategoryTreeId(this.marketplaceId),
+        await this.call('taxonomy.getDefaultCategoryTreeId', () =>
+          client.commerce.taxonomy.getDefaultCategoryTreeId(this.marketplaceId),
+        ),
       );
       const treeId = String(defaultTree.categoryTreeId ?? '');
       if (!treeId) {
-        throw new Error('eBay did not return a default category tree ID');
+        throw new ExternalServiceError('eBay Taxonomy API', 'no default category tree ID was returned');
       }
       const tree = asRecord(
         categoryId && categoryId !== '0'
-          ? await this.client.commerce.taxonomy.getCategorySubtree(treeId, categoryId)
-          : await this.client.commerce.taxonomy.getCategoryTree(treeId),
+          ? await this.call('taxonomy.getCategorySubtree', () =>
+              client.commerce.taxonomy.getCategorySubtree(treeId, categoryId),
+            )
+          : await this.call('taxonomy.getCategoryTree', () =>
+              client.commerce.taxonomy.getCategoryTree(treeId),
+            ),
       );
       const root = asRecord(tree.rootCategoryNode ?? tree.categorySubtreeNode ?? tree);
-      return { treeId, root: normalizeCategory(root) };
+      const bounded = boundCategoryTree(
+        normalizeCategory(root),
+        this.categoryMaxDepth,
+        this.categoryMaxNodes,
+      );
+      return { treeId, ...bounded };
     } catch (error) {
-      const message = errorMessage(error);
-      if (/not found|404/i.test(message) && categoryId) {
+      if (error instanceof NotFoundError) {
+        throw error;
+      }
+      if (categoryId && categoryId !== '0' && categorizeEbayError(error) === 'not_found') {
         throw new NotFoundError('Category', categoryId);
       }
-      throw new ExternalServiceError('eBay Taxonomy API', message);
+      if (error instanceof ExternalServiceError) {
+        throw error;
+      }
+      this.failure('eBay Taxonomy API', error);
     }
   }
 
-  async ping(): Promise<{ configured: boolean; mode: 'ebay' | 'demo' }> {
+  async ping(): Promise<{ configured: boolean; mode: 'ebay' | 'demo'; sandbox: boolean }> {
     if (this.mockEnabled || !this.client) {
-      return { configured: false, mode: 'demo' };
+      return { configured: false, mode: 'demo', sandbox: this.sandbox };
     }
 
+    const client = this.client;
     try {
-      await this.client.oAuth2.getApplicationAccessToken();
-      return { configured: true, mode: 'ebay' };
+      await this.call('oauth.getApplicationAccessToken', () => client.oAuth2.getApplicationAccessToken());
+      return { configured: true, mode: 'ebay', sandbox: this.sandbox };
     } catch (error) {
-      throw new ExternalServiceError('eBay OAuth', errorMessage(error));
+      this.failure('eBay OAuth', error);
     }
   }
 }

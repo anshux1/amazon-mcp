@@ -4,50 +4,273 @@
     {
       "uri": "/product-card",
       "name": "Product Card",
-      "description": "Displays current eBay product details and price.",
-      "examples": [{ "name": "Headphones", "data": { "itemId": "demo-wireless-headphones", "title": "Wireless Noise-Cancelling Headphones", "price": 79.99, "currency": "USD" } }],
+      "description": "Product detail with an image gallery, quantity stepper, and confirmed add-to-cart / buy-now actions.",
+      "examples": [
+        {
+          "name": "In stock",
+          "data": {
+            "itemId": "demo-wireless-headphones",
+            "title": "Wireless Noise-Cancelling Headphones",
+            "price": 79.99,
+            "currency": "USD",
+            "condition": "Brand New",
+            "availableQuantity": 24,
+            "imageUrl": "https://i.ebayimg.com/images/g/demo-headphones/s-l400.jpg",
+            "itemWebUrl": "https://www.ebay.com/",
+            "additionalImageUrls": [],
+            "buyingOptions": ["FIXED_PRICE"],
+            "shipping": { "value": 0, "currency": "USD" },
+            "seller": { "username": "demo-electronics", "feedbackPercentage": 99.8 },
+            "description": "Comfortable wireless headphones with active noise cancellation and a 30-hour battery.",
+            "lastUpdated": "2025-01-01T00:00:00.000Z"
+          }
+        },
+        {
+          "name": "Low stock",
+          "data": {
+            "itemId": "demo-coffee-maker",
+            "title": "Programmable Drip Coffee Maker 12-Cup",
+            "price": 39.99,
+            "currency": "USD",
+            "condition": "New",
+            "availableQuantity": 3,
+            "additionalImageUrls": [],
+            "buyingOptions": ["FIXED_PRICE"],
+            "shipping": { "value": 6.99, "currency": "USD" },
+            "lastUpdated": "2025-01-01T00:00:00.000Z"
+          }
+        },
+        {
+          "name": "Error",
+          "data": {
+            "success": false,
+            "data": null,
+            "error": { "code": "NOT_FOUND", "message": "Product 'v1|000|0' was not found", "statusCode": 404 },
+            "timestamp": "2025-01-01T00:00:00.000Z",
+            "requestId": "demo"
+          }
+        }
+      ],
       "tags": ["shopping", "product", "ebay"]
     },
     {
       "uri": "/product-search-results",
       "name": "Product Search Results",
-      "description": "Displays products returned by an eBay catalog search.",
-      "examples": [{ "name": "Search", "data": { "total": 1, "source": "demo", "items": [] } }],
+      "description": "Result grid with client-side price sorting, per-item details, and a confirmed add action.",
+      "examples": [
+        {
+          "name": "Results",
+          "data": {
+            "total": 2,
+            "offset": 0,
+            "limit": 10,
+            "source": "demo",
+            "items": [
+              {
+                "itemId": "demo-wireless-headphones",
+                "title": "Wireless Noise-Cancelling Headphones",
+                "price": 79.99,
+                "currency": "USD",
+                "condition": "Brand New",
+                "availableQuantity": 24
+              },
+              {
+                "itemId": "demo-mechanical-keyboard",
+                "title": "Compact Mechanical Keyboard RGB",
+                "price": 54.5,
+                "currency": "USD",
+                "condition": "New",
+                "availableQuantity": 4
+              }
+            ]
+          }
+        },
+        { "name": "Empty", "data": { "total": 0, "offset": 0, "limit": 10, "source": "demo", "items": [] } }
+      ],
       "tags": ["shopping", "search", "ebay"]
     },
     {
       "uri": "/category-tree",
       "name": "Category Tree",
-      "description": "Displays eBay product categories.",
-      "examples": [{ "name": "Categories", "data": { "treeId": "demo-us", "root": { "categoryId": "0", "categoryName": "All Categories", "children": [] } } }],
+      "description": "Collapsible eBay taxonomy; each category can launch a scoped catalog search.",
+      "examples": [
+        {
+          "name": "Categories",
+          "data": {
+            "treeId": "demo-us",
+            "truncated": false,
+            "depth": 1,
+            "root": {
+              "categoryId": "0",
+              "categoryName": "All Categories",
+              "children": [
+                { "categoryId": "293", "categoryName": "Consumer Electronics", "children": [] },
+                { "categoryId": "33963", "categoryName": "Computers/Tablets & Networking", "children": [] }
+              ]
+            }
+          }
+        }
+      ],
       "tags": ["shopping", "categories"]
     },
     {
       "uri": "/cart-summary",
       "name": "Cart Summary",
-      "description": "Displays cart contents and checkout totals.",
-      "examples": [{ "name": "Empty cart", "data": { "itemCount": 0, "subtotal": 0, "currency": "USD", "items": [] } }],
-      "tags": ["shopping", "cart"]
+      "description": "Cart with quantity steppers and remove actions, or a checkout quote with a confirmed place-order action.",
+      "examples": [
+        {
+          "name": "Cart",
+          "data": {
+            "userId": "demo",
+            "itemCount": 2,
+            "subtotal": 159.98,
+            "currency": "USD",
+            "revision": "demo-revision",
+            "updatedAt": "2025-01-01T00:00:00.000Z",
+            "items": [
+              {
+                "itemId": "demo-wireless-headphones",
+                "title": "Wireless Noise-Cancelling Headphones",
+                "quantity": 2,
+                "unitPrice": 79.99,
+                "currency": "USD",
+                "condition": "Brand New",
+                "addedAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2025-01-01T00:00:00.000Z"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Checkout quote",
+          "data": {
+            "checkoutId": "chk_demo",
+            "itemCount": 2,
+            "subtotal": 159.98,
+            "shipping": 0,
+            "tax": 0,
+            "total": 159.98,
+            "currency": "USD",
+            "cartRevision": "demo-revision",
+            "createdAt": "2025-01-01T00:00:00.000Z",
+            "expiresAt": "2099-01-01T00:10:00.000Z",
+            "items": [
+              {
+                "itemId": "demo-wireless-headphones",
+                "title": "Wireless Noise-Cancelling Headphones",
+                "quantity": 2,
+                "unitPrice": 79.99,
+                "lineTotal": 159.98,
+                "currency": "USD",
+                "addedAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2025-01-01T00:00:00.000Z"
+              }
+            ]
+          }
+        },
+        { "name": "Empty cart", "data": { "userId": "demo", "itemCount": 0, "subtotal": 0, "currency": "USD", "items": [] } }
+      ],
+      "tags": ["shopping", "cart", "checkout"]
     },
     {
       "uri": "/order-confirmation",
       "name": "Order Confirmation",
-      "description": "Displays a successful order confirmation.",
-      "examples": [{ "name": "Placed order", "data": { "order": { "orderId": "ord_demo", "status": "placed", "total": 79.99, "currency": "USD", "items": [] } } }],
+      "description": "Placed-order receipt with totals, shipping address, and a confirmed cancel action.",
+      "examples": [
+        {
+          "name": "Placed order",
+          "data": {
+            "alreadyPlaced": false,
+            "message": "Order placed successfully.",
+            "order": {
+              "orderId": "ord_demo",
+              "status": "placed",
+              "subtotal": 159.98,
+              "shipping": 0,
+              "tax": 0,
+              "total": 159.98,
+              "currency": "USD",
+              "fulfillment": "demo",
+              "createdAt": "2025-01-01T00:00:00.000Z",
+              "updatedAt": "2025-01-01T00:00:00.000Z",
+              "items": [
+                {
+                  "itemId": "demo-wireless-headphones",
+                  "title": "Wireless Noise-Cancelling Headphones",
+                  "quantity": 2,
+                  "unitPrice": 79.99,
+                  "lineTotal": 159.98,
+                  "currency": "USD",
+                  "addedAt": "2025-01-01T00:00:00.000Z",
+                  "updatedAt": "2025-01-01T00:00:00.000Z"
+                }
+              ]
+            }
+          }
+        }
+      ],
       "tags": ["shopping", "order"]
     },
     {
       "uri": "/order-summary",
       "name": "Order Summary",
-      "description": "Displays an order or authenticated order history.",
-      "examples": [{ "name": "Order history", "data": { "orders": [] } }],
+      "description": "One order with its line items, or a filterable order history that can drill into any order.",
+      "examples": [
+        {
+          "name": "Order history",
+          "data": {
+            "count": 2,
+            "orders": [
+              { "orderId": "ord_demo1", "status": "placed", "total": 159.98, "currency": "USD", "createdAt": "2025-01-01T00:00:00.000Z" },
+              { "orderId": "ord_demo2", "status": "cancelled", "total": 54.5, "currency": "USD", "createdAt": "2025-01-01T00:00:00.000Z" }
+            ]
+          }
+        },
+        {
+          "name": "Single order",
+          "data": {
+            "orderId": "ord_demo1",
+            "status": "placed",
+            "subtotal": 159.98,
+            "shipping": 0,
+            "tax": 0,
+            "total": 159.98,
+            "currency": "USD",
+            "fulfillment": "demo",
+            "createdAt": "2025-01-01T00:00:00.000Z",
+            "items": [
+              {
+                "itemId": "demo-wireless-headphones",
+                "title": "Wireless Noise-Cancelling Headphones",
+                "quantity": 2,
+                "unitPrice": 79.99,
+                "lineTotal": 159.98,
+                "currency": "USD",
+                "addedAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2025-01-01T00:00:00.000Z"
+              }
+            ]
+          }
+        },
+        { "name": "No orders", "data": { "count": 0, "orders": [] } }
+      ],
       "tags": ["shopping", "orders"]
     },
     {
       "uri": "/order-cancellation",
       "name": "Order Cancellation",
-      "description": "Displays a cancelled order result.",
-      "examples": [{ "name": "Cancelled order", "data": { "orderId": "ord_demo", "status": "cancelled" } }],
+      "description": "Cancellation result with follow-up actions back into history or the cart.",
+      "examples": [
+        {
+          "name": "Cancelled order",
+          "data": {
+            "orderId": "ord_demo",
+            "status": "cancelled",
+            "cancelledAt": "2025-01-01T00:00:00.000Z",
+            "message": "Order cancelled successfully."
+          }
+        }
+      ],
       "tags": ["shopping", "orders", "cancellation"]
     }
   ]

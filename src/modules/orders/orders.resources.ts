@@ -20,8 +20,20 @@ export class OrdersResources {
 4. Run \`place_order\` with the returned \`checkout_id\`.
 5. Use \`get_order\`, \`order_history\`, or \`cancel_order\` for later management.
 
-Checkout quotes expire after ten minutes. Every order and history query is scoped to the
-verified JWT subject.
+Checkout quotes expire after ten minutes by default and are bound to the cart they were
+priced from. If the cart changes afterwards, \`place_order\` returns a conflict and leaves
+the newer cart untouched: run \`checkout\` again. Prices and availability are re-read
+immediately before placement, so a change since the quote is also a conflict.
+
+\`place_order\` is safe to retry: the \`checkout_id\` is its idempotency key, so a retry
+after a timeout returns the order the first attempt created (\`alreadyPlaced: true\`)
+rather than placing a second one.
+
+Every order and history query is scoped to the verified JWT subject.
+
+This server records orders in its own database only. There is no payment, no inventory
+reservation, and no eBay fulfilment: an order reports \`fulfillment: "demo"\`, and any
+order that is not already cancelled can be cancelled.
 `;
   }
 
@@ -41,6 +53,11 @@ verified JWT subject.
         { name: 'placed', description: 'The order was created from a confirmed checkout quote.' },
         { name: 'cancelled', description: 'The order was cancelled by the authenticated shopper.' },
       ],
+      fulfillment: {
+        mode: 'demo',
+        description:
+          'Orders are recorded in this server only. No payment is authorized, no inventory is reserved, and nothing is shipped, so there are no states beyond placed and cancelled.',
+      },
     };
   }
 }

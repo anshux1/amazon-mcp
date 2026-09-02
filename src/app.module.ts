@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import {
   ConfigModule,
   JWTModule,
@@ -5,14 +6,20 @@ import {
   Module,
 } from '@nitrostack/core';
 import { CommonModule } from './common/common.module.js';
+import { HttpSecurityConfiguration } from './config/http-security.js';
+import {
+  applyRuntimeDefaults,
+  assertValidEnvironment,
+  type RuntimeDefaults,
+} from './config/environment.js';
 import { DatabaseModule } from './database/database.module.js';
-import { DatabaseHealthCheck } from './health/database.health.js';
-import { EbayHealthCheck } from './health/ebay.health.js';
-import { SystemHealthCheck } from './health/system.health.js';
+import { HealthModule } from './health/health.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { CartModule } from './modules/cart/cart.module.js';
 import { OrdersModule } from './modules/orders/orders.module.js';
 import { ProductsModule } from './modules/products/products.module.js';
+
+const runtimeDefaults: RuntimeDefaults = applyRuntimeDefaults();
 
 JWTModule.forRoot({
   secretEnvVar: 'JWT_SECRET',
@@ -27,8 +34,21 @@ JWTModule.forRoot({
     name: 'shopping-mcp-server',
     version: '1.0.0',
   },
+  // NitroStack 1.0.15 does not pass this setting to the server logger;
+  // keep its supported default explicit rather than exposing a misleading
+  // application-level log setting.
   logging: {
     level: 'info',
+  },
+  // Keep transport selection explicit. Runtime defaults are also applied to
+  // process.env because NitroStack reads these values in server.start().
+  transport: {
+    type: runtimeDefaults.transportType,
+    http: {
+      port: runtimeDefaults.port,
+      host: runtimeDefaults.host,
+      basePath: '/mcp',
+    },
   },
 })
 @Module({
@@ -38,9 +58,20 @@ JWTModule.forRoot({
     ConfigModule.forRoot({
       defaults: {
         DATABASE_FILE: '.data/shopping-db.json',
+        DATABASE_POOL_MAX: '10',
+        DATABASE_SSL: 'false',
+        DATABASE_SSL_REJECT_UNAUTHORIZED: 'true',
         EBAY_MARKETPLACE_ID: 'EBAY_US',
         EBAY_SANDBOX: 'false',
         SHOPPING_TAX_RATE: '0',
+        ENABLE_CORS: 'false',
+        MCP_TRANSPORT_TYPE: runtimeDefaults.transportType,
+        PORT: String(runtimeDefaults.port),
+        HOST: runtimeDefaults.host,
+      },
+      validate: (config) => {
+        assertValidEnvironment(config);
+        return true;
       },
     }),
     CommonModule,
@@ -49,11 +80,8 @@ JWTModule.forRoot({
     ProductsModule,
     CartModule,
     OrdersModule,
+    HealthModule,
   ],
-  providers: [
-    SystemHealthCheck,
-    DatabaseHealthCheck,
-    EbayHealthCheck,
-  ],
+  providers: [HttpSecurityConfiguration],
 })
 export class AppModule {}

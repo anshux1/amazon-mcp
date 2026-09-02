@@ -258,18 +258,31 @@ export class EbayService {
 
   constructor(config: ConfigService, client?: EbayClientLike) {
     this.marketplaceId = config.get<string>('EBAY_MARKETPLACE_ID', 'EBAY_US');
-    this.mockEnabled = !client && (
-      config.get<string>('EBAY_MOCK', 'false') === 'true' ||
-      !config.get<string>('EBAY_APP_ID') ||
-      !config.get<string>('EBAY_CERT_ID')
-    );
+
+    const mockSetting = config.get<string>('EBAY_MOCK');
+    const mockRequested = mockSetting?.trim().toLowerCase() === 'true';
+    const appId = config.get<string>('EBAY_APP_ID')?.trim();
+    const certId = config.get<string>('EBAY_CERT_ID')?.trim();
+    const credentialsMissing = !appId || !certId;
+    const nodeEnv = config.get<string>('NODE_ENV')?.trim().toLowerCase();
+    const developmentEnvironment = !nodeEnv || nodeEnv === 'development' || nodeEnv === 'dev';
+    const implicitDevelopmentDemo = developmentEnvironment && mockSetting === undefined && credentialsMissing;
+
+    if (!client && !mockRequested && credentialsMissing && !implicitDevelopmentDemo) {
+      // Keep this message free of credential values. ConfigModule validation
+      // normally catches it first, but the service also fails closed when
+      // constructed directly in a test or another application.
+      throw new Error('eBay credentials are required when EBAY_MOCK is not true');
+    }
+
+    this.mockEnabled = !client && (mockRequested || implicitDevelopmentDemo);
 
     if (client) {
       this.client = client;
     } else if (!this.mockEnabled) {
       this.client = new eBayApi({
-        appId: config.get<string>('EBAY_APP_ID') as string,
-        certId: config.get<string>('EBAY_CERT_ID') as string,
+        appId: appId as string,
+        certId: certId as string,
         devId: config.get<string>('EBAY_DEV_ID'),
         marketplaceId: this.marketplaceId as any,
         sandbox: config.get<string>('EBAY_SANDBOX', 'false') === 'true',

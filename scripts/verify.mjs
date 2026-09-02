@@ -43,7 +43,6 @@ const serverEnv = {
   JWT_SECRET: secret,
   JWT_AUDIENCE: 'amazon-mcp',
   JWT_ISSUER: 'better-auth',
-  NITRO_LOG_LEVEL: 'error',
   PORT: '0',
 };
 delete serverEnv.DATABASE_URL;

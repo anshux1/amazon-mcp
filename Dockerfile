@@ -16,6 +16,9 @@ FROM node:22-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV MCP_TRANSPORT_TYPE=http
+ENV PORT=3000
+ENV HOST=0.0.0.0
+ENV ENABLE_CORS=false
 RUN corepack enable
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./

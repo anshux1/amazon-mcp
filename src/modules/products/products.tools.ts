@@ -2,6 +2,7 @@ import {
   Cache,
   ExecutionContext,
   RateLimit,
+  type RateLimitStorage,
   ToolDecorator as Tool,
   UseFilters,
   UseInterceptors,
@@ -17,6 +18,12 @@ import { ShoppingExceptionFilter } from '../../common/pipeline/exception.filter.
 import { NormalizeInputPipe } from '../../common/pipeline/normalize-input.pipe.js';
 import { ResponseTransformInterceptor } from '../../common/pipeline/response.interceptor.js';
 import { EbayService } from './ebay.service.js';
+import {
+  EBAY_DAILY_REQUEST_LIMIT,
+  EBAY_DAILY_WINDOW,
+  EBAY_QUOTA_BUCKET,
+  ebayQuotaStorage,
+} from './ebay-quota.js';
 
 const SearchProductsSchema = z.object({
   query: z.string().min(1).max(200).describe('Words to search for, such as wireless headphones'),
@@ -33,20 +40,58 @@ const GetProductSchema = z.object({
   item_id: z.string().min(1).max(200).describe('eBay item ID, for example v1|123|0'),
 });
 
-type GetProductInput = z.infer<typeof GetProductSchema>;
-
 const GetCategoriesSchema = z.object({
   category_id: z.string().min(1).default('0').describe('Category ID, or 0 for the complete tree'),
 });
 
-type GetCategoriesInput = z.infer<typeof GetCategoriesSchema>;
-
 const EBAY_RATE_LIMIT = {
-  requests: 4500,
-  window: '1d',
-  key: () => 'ebay-global',
+  requests: EBAY_DAILY_REQUEST_LIMIT,
+  window: EBAY_DAILY_WINDOW,
+  key: () => EBAY_QUOTA_BUCKET,
+  storage: ebayQuotaStorage as RateLimitStorage,
   message: 'eBay daily request budget is temporarily exhausted; try again tomorrow',
 } as const;
+
+/**
+ * Builds a cache key from catalog parameters only. Request metadata may hold a
+ * bearer token and is never allowed into a cache key.
+ */
+export function buildSearchProductsCacheKey(input: unknown): string {
+  const value = input && typeof input === 'object'
+    ? input as Partial<SearchProductsInput>
+    : {};
+  const sort = typeof value.sort === 'string' && [
+    'best_match',
+    'price',
+    '-price',
+    'newlyListed',
+    'endingSoonest',
+  ].includes(value.sort)
+    ? value.sort
+    : null;
+
+  return `ebay:search:${JSON.stringify({
+    query: typeof value.query === 'string' ? value.query.trim().toLowerCase() : '',
+    category_id: typeof value.category_id === 'string' ? value.category_id.trim() : null,
+    limit: typeof value.limit === 'number' && Number.isInteger(value.limit) ? value.limit : 10,
+    offset: typeof value.offset === 'number' && Number.isInteger(value.offset) ? value.offset : 0,
+    sort,
+  })}`;
+}
+
+export function buildGetProductCacheKey(input: unknown): string {
+  const itemId = input && typeof input === 'object' && 'item_id' in input
+    ? (input as { item_id?: unknown }).item_id
+    : undefined;
+  return `ebay:item:${typeof itemId === 'string' ? itemId.trim() : ''}`;
+}
+
+export function buildGetCategoriesCacheKey(input: unknown): string {
+  const categoryId = input && typeof input === 'object' && 'category_id' in input
+    ? (input as { category_id?: unknown }).category_id
+    : undefined;
+  return `ebay:categories:${typeof categoryId === 'string' ? categoryId.trim() : '0'}`;
+}
 
 @Injectable({ deps: [EbayService] })
 export class ProductsTools {
@@ -74,10 +119,7 @@ export class ProductsTools {
   @RateLimit(EBAY_RATE_LIMIT)
   @Cache({
     ttl: 30,
-    key: (input: unknown) => {
-      const value = input as SearchProductsInput;
-      return `ebay:search:${JSON.stringify(value)}`;
-    },
+    key: buildSearchProductsCacheKey,
   })
   @UseMiddleware(LoggingMiddleware)
   @UseInterceptors(ResponseTransformInterceptor)
@@ -120,9 +162,10 @@ export class ProductsTools {
       },
     },
   })
+  @RateLimit(EBAY_RATE_LIMIT)
   @Cache({
     ttl: 120,
-    key: (input: unknown) => `ebay:item:${(input as GetProductInput).item_id}`,
+    key: buildGetProductCacheKey,
   })
   @UseMiddleware(LoggingMiddleware)
   @UseInterceptors(ResponseTransformInterceptor)
@@ -158,7 +201,7 @@ export class ProductsTools {
   @RateLimit(EBAY_RATE_LIMIT)
   @Cache({
     ttl: 3600,
-    key: (input: unknown) => `ebay:categories:${(input as GetCategoriesInput).category_id}`,
+    key: buildGetCategoriesCacheKey,
   })
   @UseMiddleware(LoggingMiddleware)
   @UseInterceptors(ResponseTransformInterceptor)

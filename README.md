@@ -42,18 +42,20 @@ Copy `.env.example` and set values for the deployment. Important settings:
 
 | Variable | Purpose |
 | --- | --- |
-| `JWT_SECRET` | Shared Better Auth signing secret; use a long random secret outside development |
-| `JWT_AUDIENCE` / `JWT_ISSUER` | Optional JWT claim validation values |
-| `DATABASE_URL` | Postgres/Neon connection string; takes precedence over file storage |
-| `DATABASE_FILE` | Local JSON store path, or `:memory:` for tests |
+| `JWT_SECRET` | Shared Better Auth signing secret; at least 32 bytes outside development |
+| `JWT_AUDIENCE` / `JWT_ISSUER` | JWT claim validation values (`amazon-mcp` / `better-auth` in the example) |
+| `JWT_ALGORITHM` / `JWT_EXPIRES_IN` | HMAC algorithm (`HS256`, `HS384`, or `HS512`) and token lifetime |
+| `DATABASE_URL` | Postgres/Neon connection string; required outside development and takes precedence over file storage |
+| `DATABASE_FILE` | Single-process local JSON store, or `:memory:` for tests; not a production fallback |
 | `EBAY_APP_ID` / `EBAY_CERT_ID` | eBay keyset for live Browse/Taxonomy calls |
 | `EBAY_MARKETPLACE_ID` | eBay marketplace, default `EBAY_US` |
-| `EBAY_MOCK` | Set `true` for the deterministic offline catalog |
-| `MCP_TRANSPORT_TYPE` | `stdio`, `http`, or `dual`; otherwise NitroStack selects stdio in development and dual in production |
-| `PORT` / `HOST` | HTTP listener settings for `http` or `dual` transport |
+| `EBAY_MOCK` | Set `true` to explicitly enable the deterministic offline catalog |
+| `MCP_TRANSPORT_TYPE` | `stdio`, `http`, or `dual`; omitted development defaults to `stdio`, omitted production defaults to `http` |
+| `PORT` / `HOST` | HTTP listener settings; production defaults to `3000` / `0.0.0.0` when omitted |
+| `ENABLE_CORS` / `CORS_ALLOWED_ORIGINS` | CORS opt-in and exact comma-separated HTTP(S) origin allowlist; wildcard origins are rejected |
 | `SHOPPING_TAX_RATE` | Decimal tax rate used in checkout, for example `0.0725` |
 
-When eBay credentials are absent, the server uses the demo catalog so it can run without external services. Set `EBAY_MOCK=false` and provide credentials to exercise eBay. In production, configure credentials explicitly and monitor the eBay health check.
+In development, missing eBay credentials are allowed for the offline demo. Outside development, set `EBAY_MOCK=true` to explicitly allow demo mode, or set `EBAY_MOCK=false` and provide both eBay credentials. A production configuration never silently falls back to the demo catalog. Monitor `health://checks` for the configured eBay status.
 
 ## MCP surface
 
@@ -74,6 +76,18 @@ When eBay credentials are absent, the server uses the demo catalog so it can run
 | `cancel_order` | JWT | Cancel an order owned by the authenticated user |
 
 Protected calls use a Bearer token. For MCP clients, provide it in request metadata; for HTTP clients, send the normal `Authorization` header. The verified JWT `sub` is the user ID—no tool accepts a caller-supplied `userId`.
+
+### Authentication configuration
+
+The selected strategy is a Better Auth JWT bridge for a trusted first-party frontend. Better Auth must issue a signed HMAC JWT with a stable application-user `sub` claim. This server expects the following token contract from `.env.example`:
+
+- `JWT_ALGORITHM=HS256`
+- `JWT_AUDIENCE=amazon-mcp`
+- `JWT_ISSUER=better-auth`
+- `JWT_EXPIRES_IN=1h` (the issuer controls the actual `exp` claim)
+- `JWT_SECRET` shared through a secret manager, never committed to source
+
+The guard verifies the signature, expiration, issuer, audience, and non-empty `sub`. It accepts `Authorization: Bearer <token>` from HTTP requests and the equivalent MCP `_meta.authorization` metadata. Optional `shopping:read` and `shopping:write` scope claims are captured for the future scope-enforcement phase; the current protected tools require a valid JWT.
 
 Recommended flow:
 
@@ -113,11 +127,11 @@ The Postgres adapter creates `shopping_carts` and `shopping_orders` tables on st
 
 Before deployment:
 
-1. Set `NODE_ENV=production` and `MCP_TRANSPORT_TYPE=http` or `dual`.
-2. Set `DATABASE_URL`, TLS settings, `JWT_SECRET`, and live eBay credentials through the secret manager.
-3. Keep `EBAY_MOCK=false` and verify `health://checks` reports the database and eBay as `up`.
+1. Set `NODE_ENV=production` and explicitly choose `MCP_TRANSPORT_TYPE=http` (or `dual` only when stdio is intentionally needed).
+2. Set `HOST=0.0.0.0`, `DATABASE_URL`, TLS settings, `JWT_SECRET`, and live eBay credentials through the secret manager.
+3. Keep `EBAY_MOCK=false` for live access and verify `health://checks` reports the database and eBay as `up`.
 4. Run `pnpm verify` in CI and `pnpm build` during image creation.
-5. Put the HTTP transport behind TLS/auth-aware infrastructure and configure CORS deliberately.
+5. Put the HTTP transport behind TLS/auth-aware infrastructure. Leave CORS disabled for non-browser clients, or set `ENABLE_CORS=true` together with an exact `CORS_ALLOWED_ORIGINS` allowlist; wildcard CORS is not supported.
 
 The repository also includes a multi-stage `Dockerfile`:
 

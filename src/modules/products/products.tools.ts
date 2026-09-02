@@ -13,6 +13,14 @@ import {
   Injectable,
 } from '@nitrostack/core';
 import { parseInput } from '../../common/validation.js';
+import {
+  CategoryTreeOutputSchema,
+  ProductDetailsOutputSchema,
+  SearchResultOutputSchema,
+  standardOutput,
+} from '../../common/output-schema.js';
+import { EBAY_IMAGE_CSP } from '../../config/widget-csp.js';
+import { InstrumentedCacheStorage } from '../../observability/metrics.service.js';
 import { LoggingMiddleware } from '../../common/pipeline/logging.middleware.js';
 import { ShoppingExceptionFilter } from '../../common/pipeline/exception.filter.js';
 import { NormalizeInputPipe } from '../../common/pipeline/normalize-input.pipe.js';
@@ -43,6 +51,10 @@ const GetProductSchema = z.object({
 const GetCategoriesSchema = z.object({
   category_id: z.string().min(1).default('0').describe('Category ID, or 0 for the complete tree'),
 });
+
+// Catalog responses are cached separately from the framework's shared default
+// storage so hit and miss counts can be reported by metrics://shopping.
+const catalogCache = new InstrumentedCacheStorage('catalog');
 
 const EBAY_RATE_LIMIT = {
   requests: EBAY_DAILY_REQUEST_LIMIT,
@@ -102,6 +114,7 @@ export class ProductsTools {
     title: 'Search products',
     description: 'Search the eBay catalog for products matching a text query and optional category.',
     inputSchema: SearchProductsSchema,
+    outputSchema: standardOutput(SearchResultOutputSchema),
     examples: {
       request: { query: 'wireless headphones', limit: 5 },
       response: {
@@ -116,16 +129,20 @@ export class ProductsTools {
       },
     },
   })
-  @RateLimit(EBAY_RATE_LIMIT)
+  // @Cache is listed above @RateLimit so it wraps it: a cache hit returns
+  // without touching the eBay quota, which therefore counts eBay requests
+  // rather than tool invocations.
   @Cache({
     ttl: 30,
     key: buildSearchProductsCacheKey,
+    storage: catalogCache,
   })
+  @RateLimit(EBAY_RATE_LIMIT)
   @UseMiddleware(LoggingMiddleware)
   @UseInterceptors(ResponseTransformInterceptor)
   @UseFilters(ShoppingExceptionFilter)
   @UsePipes(NormalizeInputPipe)
-  @Widget('product-search-results')
+  @Widget({ route: 'product-search-results', csp: EBAY_IMAGE_CSP })
   async searchProducts(input: unknown, ctx: ExecutionContext) {
     const value = parseInput(SearchProductsSchema, input);
     ctx.logger.info('Searching eBay products', {
@@ -148,6 +165,7 @@ export class ProductsTools {
     title: 'Get product',
     description: 'Retrieve current details and pricing for one eBay item.',
     inputSchema: GetProductSchema,
+    outputSchema: standardOutput(ProductDetailsOutputSchema),
     examples: {
       request: { item_id: 'v1|123|0' },
       response: {
@@ -162,16 +180,17 @@ export class ProductsTools {
       },
     },
   })
-  @RateLimit(EBAY_RATE_LIMIT)
   @Cache({
     ttl: 120,
     key: buildGetProductCacheKey,
+    storage: catalogCache,
   })
+  @RateLimit(EBAY_RATE_LIMIT)
   @UseMiddleware(LoggingMiddleware)
   @UseInterceptors(ResponseTransformInterceptor)
   @UseFilters(ShoppingExceptionFilter)
   @UsePipes(NormalizeInputPipe)
-  @Widget('product-card')
+  @Widget({ route: 'product-card', csp: EBAY_IMAGE_CSP })
   async getProduct(input: unknown, ctx: ExecutionContext) {
     const value = parseInput(GetProductSchema, input);
     ctx.logger.info('Fetching eBay product', { itemId: value.item_id });
@@ -181,8 +200,9 @@ export class ProductsTools {
   @Tool({
     name: 'get_categories',
     title: 'Get product categories',
-    description: 'Retrieve the eBay category tree, or a category subtree when category_id is supplied.',
+    description: 'Retrieve the eBay category tree, or a category subtree when category_id is supplied. Deep trees are truncated to keep responses within practical client limits.',
     inputSchema: GetCategoriesSchema,
+    outputSchema: standardOutput(CategoryTreeOutputSchema),
     examples: {
       request: { category_id: '0' },
       response: {
@@ -198,11 +218,12 @@ export class ProductsTools {
       },
     },
   })
-  @RateLimit(EBAY_RATE_LIMIT)
   @Cache({
     ttl: 3600,
     key: buildGetCategoriesCacheKey,
+    storage: catalogCache,
   })
+  @RateLimit(EBAY_RATE_LIMIT)
   @UseMiddleware(LoggingMiddleware)
   @UseInterceptors(ResponseTransformInterceptor)
   @UseFilters(ShoppingExceptionFilter)
@@ -215,4 +236,4 @@ export class ProductsTools {
   }
 }
 
-export { GetCategoriesSchema, GetProductSchema, SearchProductsSchema };
+export { catalogCache, GetCategoriesSchema, GetProductSchema, SearchProductsSchema };

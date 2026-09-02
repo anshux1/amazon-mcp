@@ -14,11 +14,14 @@ export class CartResources {
   async getCartGuide(_uri: string, _ctx: ExecutionContext): Promise<string> {
     return `# Cart Guide
 
-- \`add_to_cart\` adds or increments an eBay item for the authenticated user.
-- \`view_cart\` returns the current cart and displayed subtotal.
+- \`add_to_cart\` takes only \`item_id\` and \`quantity\`. The title, price, currency, URL,
+  and availability are fetched from eBay by the server, so a caller cannot put a forged
+  price into a cart and an item that does not exist is rejected.
+- \`view_cart\` returns the current cart, its displayed subtotal, and a \`revision\`
+  fingerprint. A checkout quote is bound to that revision.
 - \`update_cart_item\` sets a quantity; use 0 to remove an item.
 - The \`userId\` is always taken from the verified JWT subject and is never accepted as input.
-- Checkout re-fetches every item so the displayed price is not treated as final.
+- Checkout re-fetches every item, so the displayed price is never treated as final.
 `;
   }
 }

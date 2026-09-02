@@ -20,6 +20,14 @@ export class UnauthorizedError extends ShoppingError {
   }
 }
 
+/** The caller is authenticated, but is not allowed to perform the operation. */
+export class ForbiddenError extends ShoppingError {
+  constructor(message = 'You do not have permission to perform this operation', details?: unknown) {
+    super(message, 'FORBIDDEN', 403, details);
+    this.name = 'ForbiddenError';
+  }
+}
+
 export class NotFoundError extends ShoppingError {
   constructor(resource: string, identifier: string) {
     super(`${resource} '${identifier}' was not found`, 'NOT_FOUND', 404, {

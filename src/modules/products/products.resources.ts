@@ -31,19 +31,16 @@ explicit demo catalog when \`EBAY_MOCK=true\` or credentials are absent.
   @Resource({
     uri: 'shopping://featured-products',
     name: 'Featured Products',
-    description: 'A small catalog sample for demos and clients that need an initial shopping view.',
+    description:
+      'A deterministic featured selection: the curated SHOPPING_FEATURED_ITEM_IDS list when configured, a fixed catalog query otherwise, and the offline catalog in demo mode.',
     mimeType: 'application/json',
     metadata: { cacheable: true, cacheMaxAge: 300000 },
     examples: {
-      response: { source: 'demo', items: [] },
+      response: { source: 'demo', strategy: 'demo_catalog', items: [] },
     },
   })
   async getFeaturedProducts(_uri: string, _ctx: ExecutionContext) {
-    return this.products.searchItems({
-      query: 'demo',
-      limit: 10,
-      offset: 0,
-    });
+    return this.products.getFeatured();
   }
 
   @Resource({
